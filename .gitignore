@@ -1,0 +1,32 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# 代码生成产物（从 api/openapi 生成，不入库）
+/internal/**/gen/
+/web/src/api/gen/
+
+# 前端
+node_modules/
+/web/dist/
+/web/.vite/
+*.tsbuildinfo
+
+# 本地环境
+.env
+.env.local
+*.local.yaml
+
+# Python 工具的缓存
+__pycache__/
+*.pyc
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

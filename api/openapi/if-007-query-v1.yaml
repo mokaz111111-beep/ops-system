@@ -1,0 +1,940 @@
+openapi: 3.1.0
+
+info:
+  title: 可观测性平台 · 查询 API (IF-7)
+  version: "1.0.0"
+  description: |
+    IF-7 查询 API 的机器可读契约，权威文档见 `docs/if/IF-007_查询API规格.md`。
+
+    本文件覆盖 **v1（M2 冻结范围）**。M3+ 接口未包含，但路径已在规格 §7 预留。
+
+    两条贯穿全局的约定：
+      - 请求中任何 tenant_id / project_id 字段一律被服务端忽略并覆盖，租户由鉴权中间件注入。
+      - 所有查询接口强制要求时间范围，无默认值。
+
+    代码生成用途：
+      - 前端 TypeScript 类型
+      - 服务端 Go 结构体与路由骨架
+    两侧都从本文件生成，不手写，以免签名漂移。
+
+servers:
+  - url: /api/v1
+
+security:
+  - sessionAuth: []
+  - akskAuth: []
+
+tags:
+  - name: logs
+  - name: metrics
+  - name: catalog
+  - name: exports
+  - name: queries
+
+paths:
+
+  /dimensions:
+    post:
+      tags: [catalog]
+      operationId: listDimensions
+      summary: 维度枚举（project / cluster / service）
+      description: |
+        FE-02。同时是 AI 输入框 @ 补全的数据源。
+        last_seen 用于前端灰显已失活集群。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [time_range, dimensions]
+              properties:
+                time_range:
+                  $ref: '#/components/schemas/TimeRange'
+                dimensions:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum: [project, cluster, service]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query_id]
+                properties:
+                  project:
+                    type: array
+                    items: { $ref: '#/components/schemas/DimensionValue' }
+                  cluster:
+                    type: array
+                    items: { $ref: '#/components/schemas/DimensionValue' }
+                  service:
+                    type: array
+                    items: { $ref: '#/components/schemas/DimensionValue' }
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /fields:
+    post:
+      tags: [catalog]
+      operationId: listFields
+      summary: 字段目录（列配置与 Facet 列表的唯一数据源）
+      description: |
+        FE-06，v2.0 新增能力。
+
+        catalog_age_seconds 如实告知数据新鲜度：探查运行时子列状态代价不低，
+        因此服务端缓存（刷新周期 <= 5 分钟）。前端不得假设它是实时的。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signal, time_range]
+              properties:
+                signal:
+                  $ref: '#/components/schemas/Signal'
+                time_range:
+                  $ref: '#/components/schemas/TimeRange'
+                prefix:
+                  type: string
+                  description: 路径前缀，用于搜索过滤
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fields, catalog_age_seconds, query_id]
+                properties:
+                  fields:
+                    type: array
+                    items: { $ref: '#/components/schemas/FieldDescriptor' }
+                  catalog_age_seconds:
+                    type: integer
+                    description: 目录缓存已生成多久
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/search:
+    post:
+      tags: [logs]
+      operationId: searchLogs
+      summary: 日志检索（游标分页 + 显式路径投影）
+      description: |
+        FE-03。
+
+        select_paths 是必填参数，不是可选优化 —— 前端不声明要哪些字段，
+        网关就无法构造路径投影，只能整条读或拒绝。
+
+        以下字段无论是否出现在 select_paths 中都强制返回：
+        row_ref, ts, service, cluster_id, trace_id, severity, body
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/LogFilter'
+                - type: object
+                  required: [select_paths]
+                  properties:
+                    select_paths:
+                      type: array
+                      minItems: 0
+                      items: { type: string }
+                      description: 需要返回的字段路径集合。必填（可为空数组，此时只返回强制字段）
+                    sort:
+                      type: string
+                      default: ts desc
+                      enum: [ts desc, ts asc]
+                    limit:
+                      type: integer
+                      default: 100
+                      minimum: 1
+                      maximum: 1000
+                    cursor:
+                      $ref: '#/components/schemas/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, scan_limit_reached, query_id]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/LogRow' }
+                  next_cursor:
+                    oneOf:
+                      - $ref: '#/components/schemas/Cursor'
+                      - type: 'null'
+                    description: null 表示已到末页
+                  scan_limit_reached:
+                    type: boolean
+                    description: 结果因触达扫描上限而被截断，UI 必须提示，不得静默展示不完整结果
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/histogram:
+    post:
+      tags: [logs]
+      operationId: logHistogram
+      summary: 日志量时间分桶聚合（按 severity 堆叠）
+      description: |
+        FE-04。前端按返回的 interval 渲染坐标轴，不按请求值 ——
+        服务端可因时间窗过大而放粗粒度。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/LogFilter'
+                - type: object
+                  properties:
+                    interval:
+                      type: string
+                      default: auto
+                      description: 如 "1m" / "5m" / "1h"，或 "auto" 由服务端选择
+                    group_by:
+                      type: string
+                      enum: [severity]
+                      default: severity
+                      description: v1 仅支持 severity
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets, interval, downsampled, query_id]
+                properties:
+                  buckets:
+                    type: array
+                    items: { $ref: '#/components/schemas/HistogramBucket' }
+                  interval:
+                    type: string
+                    description: 实际采用的粒度
+                  downsampled:
+                    type: boolean
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/facet:
+    post:
+      tags: [logs]
+      operationId: logFacet
+      summary: 任意字段路径的 top values 聚合
+      description: |
+        FE-05。
+
+        聚合分母必须只含本租户数据 —— 这是串扰测试里最容易漏的一类：
+        数据本身取不到，但 top values 的计数被其他租户污染了。本接口必须进串扰断言。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/LogFilter'
+                - type: object
+                  required: [field_path]
+                  properties:
+                    field_path:
+                      type: string
+                    top_n:
+                      type: integer
+                      default: 10
+                      minimum: 1
+                      maximum: 1000
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [values, declared, subcolumnized, indexed, truncated, query_id]
+                properties:
+                  values:
+                    type: array
+                    items: { $ref: '#/components/schemas/FacetValue' }
+                  distinct_estimate:
+                    type: integer
+                  declared:
+                    type: boolean
+                  subcolumnized:
+                    type: boolean
+                  indexed:
+                    type: boolean
+                  truncated:
+                    type: boolean
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/row/{row_ref}:
+    get:
+      tags: [logs]
+      operationId: getLogRow
+      summary: 单条日志详情（唯一允许整条文档读的日志接口）
+      description: |
+        FE-07。只返回 1 行，因此允许整条读。
+
+        row_ref 的有效期契约见规格 §5.1：至少 24 小时有效，且跨 compaction 有效。
+      parameters:
+        - name: row_ref
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/RowRef' }
+        - $ref: '#/components/parameters/ClientQueryId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [row, query_id]
+                properties:
+                  row:
+                    $ref: '#/components/schemas/LogRowFull'
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/context:
+    post:
+      tags: [logs]
+      operationId: logContext
+      summary: 以某行为锚点取相邻日志
+      description: |
+        FE-08。
+
+        行序语义有未解决的前提：同一毫秒内多行如何稳定排序、跨 tablet 能否保证顺序一致，
+        目前无法承诺。若 M1 验证表明不可保证，本接口语义退化为
+        "同 scope 内时间邻近的 N 条" 而非严格前后 N 条。接口签名不受影响。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anchor]
+              properties:
+                anchor:
+                  $ref: '#/components/schemas/RowRef'
+                before:
+                  type: integer
+                  default: 50
+                  minimum: 0
+                  maximum: 500
+                after:
+                  type: integer
+                  default: 50
+                  minimum: 0
+                  maximum: 500
+                scope:
+                  type: string
+                  enum: [pod, container, file, service]
+                  default: pod
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, order_guaranteed, query_id]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/LogRow' }
+                  order_guaranteed:
+                    type: boolean
+                    description: |
+                      服务端是否能保证严格行序。false 表示结果为时间邻近近似，
+                      UI 需据此调整表述，不要声称是精确上下文。
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /logs/aggregate:
+    post:
+      tags: [logs]
+      operationId: aggregateLogs
+      summary: 按字段路径分组的聚合（图表分析模式）
+      description: |
+        FE-12。仅允许路径投影，与 /logs/search 同一约束。
+        省略 interval 则返回 topN 而非时序。
+      parameters:
+        - $ref: '#/components/parameters/ClientQueryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/LogFilter'
+                - type: object
+                  required: [group_by_paths, agg]
+                  properties:
+                    group_by_paths:
+                      type: array
+                      minItems: 1
+                      items: { type: string }
+                    agg:
+                      type: string
+                      enum: [count, sum, avg, p50, p95, p99]
+                    agg_path:
+                      type: string
+                      description: agg 不为 count 时必填
+                    interval:
+                      type: string
+                      description: 省略则返回 topN 而非时序
+                    top_n:
+                      type: integer
+                      default: 20
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [series, query_id]
+                properties:
+                  series:
+                    type: array
+                    items: { $ref: '#/components/schemas/AggSeries' }
+                  query_id:
+                    $ref: '#/components/schemas/QueryId'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /metrics/query:
+    get:
+      tags: [metrics]
+      operationId: promQueryGet
+      summary: PromQL 即时查询（Prometheus 原生语义）
+      description: |
+        FE-21。保持 Prometheus HTTP API 原生语义与响应格式，
+        以便 Grafana 直接配成 Prometheus 数据源。
+        租户路由由网关注入 vmauth accountID，前端不传任何租户参数。
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: time,  in: query, schema: { type: string } }
+        - { name: timeout, in: query, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [metrics]
+      operationId: promQueryPost
+      summary: PromQL 即时查询（表单编码，用于长查询）
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                time: { type: string }
+                timeout: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /metrics/query_range:
+    get:
+      tags: [metrics]
+      operationId: promQueryRangeGet
+      summary: PromQL 区间查询
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: start, in: query, required: true, schema: { type: string } }
+        - { name: end,   in: query, required: true, schema: { type: string } }
+        - { name: step,  in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [metrics]
+      operationId: promQueryRangePost
+      summary: PromQL 区间查询（表单编码）
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [query, start, end, step]
+              properties:
+                query: { type: string }
+                start: { type: string }
+                end:   { type: string }
+                step:  { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /metrics/labels:
+    get:
+      tags: [metrics]
+      operationId: promLabels
+      summary: 标签名列表
+      description: FE-22。没有这组元数据接口，Metrics Explorer 只能让用户手写 PromQL。
+      parameters:
+        - $ref: '#/components/parameters/PromMatch'
+        - $ref: '#/components/parameters/PromStart'
+        - $ref: '#/components/parameters/PromEnd'
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /metrics/label/{name}/values:
+    get:
+      tags: [metrics]
+      operationId: promLabelValues
+      summary: 某标签的取值列表
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/PromMatch'
+        - $ref: '#/components/parameters/PromStart'
+        - $ref: '#/components/parameters/PromEnd'
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /metrics/series:
+    get:
+      tags: [metrics]
+      operationId: promSeries
+      summary: series 列表
+      parameters:
+        - $ref: '#/components/parameters/PromMatchRequired'
+        - $ref: '#/components/parameters/PromStart'
+        - $ref: '#/components/parameters/PromEnd'
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /metrics/metadata:
+    get:
+      tags: [metrics]
+      operationId: promMetadata
+      summary: 指标元数据（类型、帮助文本、单位）
+      parameters:
+        - { name: metric, in: query, schema: { type: string } }
+        - { name: limit,  in: query, schema: { type: integer } }
+      responses:
+        '200': { $ref: '#/components/responses/PrometheusResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /exports:
+    post:
+      tags: [exports]
+      operationId: createExport
+      summary: 创建异步导出任务
+      description: |
+        FE-13（部分）。这是 SCAN_LIMIT_EXCEEDED 的降级落点 ——
+        错误里的 suggested_action=USE_ASYNC_EXPORT 指向这里。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/LogFilter'
+                - type: object
+                  required: [format]
+                  properties:
+                    select_paths:
+                      type: array
+                      items: { type: string }
+                    format:
+                      type: string
+                      enum: [csv, ndjson, parquet]
+      responses:
+        '202':
+          description: 任务已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task_id]
+                properties:
+                  task_id: { type: string }
+        default: { $ref: '#/components/responses/Error' }
+
+  /exports/{task_id}:
+    get:
+      tags: [exports]
+      operationId: getExport
+      summary: 查询导出任务状态
+      parameters:
+        - { name: task_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [queued, running, succeeded, failed, cancelled]
+                  progress:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  download_url:
+                    oneOf:
+                      - { type: string }
+                      - { type: 'null' }
+                  error:
+                    $ref: '#/components/schemas/ApiError'
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [exports]
+      operationId: cancelExport
+      summary: 取消导出任务
+      parameters:
+        - { name: task_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已取消 }
+        default: { $ref: '#/components/responses/Error' }
+
+  /queries/{client_query_id}:
+    delete:
+      tags: [queries]
+      operationId: cancelQuery
+      summary: 取消正在执行的查询
+      description: |
+        按客户端在请求头 X-Client-Query-Id 中提供的 id 取消。
+        未提供该头的查询不可取消。
+
+        用户改条件重查的频率很高，不支持取消会让每租户并发配额被已被放弃的查询占满 ——
+        所以前端应默认总是带这个头。
+      parameters:
+        - { name: client_query_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: 已取消或该查询已结束 }
+        default: { $ref: '#/components/responses/Error' }
+
+components:
+
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: session
+    akskAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    ClientQueryId:
+      name: X-Client-Query-Id
+      in: header
+      required: false
+      schema: { type: string, format: uuid }
+      description: 客户端生成的 UUID，用于后续取消该查询。强烈建议总是提供。
+    PromMatch:
+      name: match[]
+      in: query
+      schema: { type: array, items: { type: string } }
+      style: form
+      explode: true
+    PromMatchRequired:
+      name: match[]
+      in: query
+      required: true
+      schema: { type: array, items: { type: string } }
+      style: form
+      explode: true
+    PromStart:
+      name: start
+      in: query
+      schema: { type: string }
+    PromEnd:
+      name: end
+      in: query
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: 错误。错误码表见规格 §3。
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { $ref: '#/components/schemas/ApiError' }
+    PrometheusResponse:
+      description: Prometheus 原生响应格式，不做改写。
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [status]
+            properties:
+              status: { type: string, enum: [success, error] }
+              data: {}
+              errorType: { type: string }
+              error: { type: string }
+              warnings: { type: array, items: { type: string } }
+
+  schemas:
+
+    TimeRange:
+      type: object
+      required: [from, to]
+      description: |
+        绝对区间（RFC3339）或相对表达（如 now-1h / now）。
+        两种形式都必须支持，且在保存视图与分享链接中原样往返 ——
+        相对形式不得在存储时被解析成绝对值，否则巡检类视图每次打开都停在创建那天。
+      properties:
+        from: { type: string, examples: ["now-1h", "2026-10-02T10:00:00Z"] }
+        to:   { type: string, examples: ["now",    "2026-10-02T11:00:00Z"] }
+
+    LogFilter:
+      type: object
+      required: [time_range]
+      description: |
+        检索 / 直方图 / Facet / 聚合四类接口共享同一结构，不得各自定义 ——
+        它们作用于同一组条件且需同步刷新，各自定义会在前端产生多套转换逻辑并随时间漂移。
+      properties:
+        time_range:
+          $ref: '#/components/schemas/TimeRange'
+        query:
+          type: string
+          description: |
+            检索表达式。语法形态尚未定稿（DD-005 Q5-2：类 KQL 自研 / SQL 子集 / 双模式），
+            刻意定为不透明字符串，使语法决策不阻塞接口定稿与前端开工。
+        cluster_ids:
+          type: array
+          items: { type: string }
+        project_ids:
+          type: array
+          items: { type: string }
+        severity:
+          type: array
+          items: { $ref: '#/components/schemas/Severity' }
+
+    Signal:
+      type: string
+      enum: [logs, spans]
+
+    Severity:
+      type: string
+      enum: [TRACE, DEBUG, INFO, WARN, ERROR, FATAL]
+
+    QueryId:
+      type: string
+      description: |
+        服务端生成，与查询审计记录同键。必须从 M2 起就在所有查询接口返回中存在，
+        即使 AI 结论回放要到 M4 —— 晚加等于丢掉之前所有查询的可回溯性。
+      examples: ["q-01HQZX3M7K8P2N4R6T9V1B5D7F"]
+
+    Cursor:
+      type: string
+      description: |
+        不透明游标，客户端不得解析或构造。默认有效期 5 分钟，
+        过期返回 CURSOR_EXPIRED + suggested_action=RESTART_QUERY。
+      examples: ["eyJ0cyI6IjIwMjYtMTAtMDJUMTE6NTg6MDMuNDEyWiJ9"]
+
+    RowRef:
+      type: string
+      description: |
+        单行稳定定位键，不透明。契约要求：至少 24 小时内有效，且跨 compaction 有效
+        （规格 §5.1 —— 该要求筛掉了"查询层合成 (分区,tablet,rowset,行号)"方案）。
+      examples: ["r-eyJwIjoiMjAyNjEwMDIiLCJpIjoiMDFIUVpY"]
+
+    DimensionValue:
+      type: object
+      required: [value]
+      properties:
+        value: { type: string }
+        last_seen:
+          type: string
+          format: date-time
+          description: 用于前端灰显已失活集群
+
+    FieldDescriptor:
+      type: object
+      required: [path, type, declared, subcolumnized, indexed]
+      properties:
+        path: { type: string }
+        type:
+          type: string
+          examples: ["INT", "STRING", "DOUBLE", "BOOLEAN", "JSONB"]
+        declared:
+          type: boolean
+          description: 该路径在 Schema Template 中声明了强类型（静态，来自建表定义）
+        subcolumnized:
+          type: boolean
+          description: |
+            该路径当前确实被列式提取为子列。这是运行时事实而非配置，会漂移 ——
+            热点路径被 Top-N 取舍挤出子列化时变为 false，此时该字段聚合显著变慢，
+            UI 据此标注"低频字段，聚合较慢"。
+        indexed:
+          type: boolean
+          description: 该路径有路径级倒排索引
+        last_seen:
+          type: string
+          format: date-time
+
+    LogRow:
+      type: object
+      required: [row_ref, ts, service, cluster_id, severity, body, fields]
+      description: |
+        强制返回字段（无论是否在 select_paths 中）：
+        row_ref, ts, service, cluster_id, trace_id, severity, body
+      properties:
+        row_ref:    { $ref: '#/components/schemas/RowRef' }
+        ts:         { type: string, format: date-time }
+        service:    { type: string }
+        cluster_id: { type: string }
+        trace_id:
+          oneOf:
+            - { type: string }
+            - { type: 'null' }
+        severity:   { $ref: '#/components/schemas/Severity' }
+        body:       { type: string }
+        fields:
+          type: object
+          additionalProperties: true
+          description: 按请求的 select_paths 投影出的字段，键为字段路径
+
+    LogRowFull:
+      allOf:
+        - $ref: '#/components/schemas/LogRow'
+        - type: object
+          properties:
+            log_attributes:
+              type: object
+              additionalProperties: true
+            resource_attributes:
+              type: object
+              additionalProperties: true
+
+    HistogramBucket:
+      type: object
+      required: [ts_start, count]
+      properties:
+        ts_start: { type: string, format: date-time }
+        severity: { $ref: '#/components/schemas/Severity' }
+        count:    { type: integer }
+
+    FacetValue:
+      type: object
+      required: [value, count]
+      properties:
+        value: { type: string }
+        count: { type: integer }
+
+    AggSeries:
+      type: object
+      required: [group, points]
+      properties:
+        group:
+          type: object
+          additionalProperties: { type: string }
+          description: 分组键值对，键为 group_by_paths 中的路径
+        points:
+          type: array
+          items:
+            type: object
+            required: [value]
+            properties:
+              ts:    { type: string, format: date-time, description: topN 模式下缺省 }
+              value: { type: number }
+
+    ApiError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          enum:
+            - INVALID_PARAM
+            - TIME_RANGE_REQUIRED
+            - TIME_RANGE_TOO_LARGE
+            - SELECT_PATHS_REQUIRED
+            - TOO_MANY_SELECT_PATHS
+            - FIELD_PATH_NOT_FOUND
+            - QUERY_SYNTAX_ERROR
+            - UNSUPPORTED_SQL
+            - CURSOR_EXPIRED
+            - SCAN_LIMIT_EXCEEDED
+            - QUOTA_EXCEEDED
+            - CONCURRENCY_QUEUE_TIMEOUT
+            - QUERY_TIMEOUT
+            - QUERY_CANCELLED
+            - INTERNAL
+        message:
+          type: string
+          description: 用户可读文案
+        retryable:
+          type: boolean
+        suggested_action:
+          type: string
+          description: |
+            枚举而非文案 —— UI 要把拒绝渲染成可点击的按钮
+            （缩小时间窗 / 改走异步导出 / 稍后重试），而不是一段红色文字。
+            只有文本的话，查询治理的产品化引导就落不了地。
+          enum:
+            - NARROW_TIME_RANGE
+            - REDUCE_SELECT_PATHS
+            - USE_ASYNC_EXPORT
+            - RETRY_AFTER
+            - RESTART_QUERY
+            - FIX_REQUEST
+            - CONTACT_SUPPORT
+        details:
+          type: object
+          additionalProperties: true
+        retry_after_seconds:
+          oneOf:
+            - { type: integer }
+            - { type: 'null' }
+        query_id:
+          $ref: '#/components/schemas/QueryId'
