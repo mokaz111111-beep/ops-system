@@ -72,7 +72,9 @@ func NewKafka(cfg KafkaConfig) (*Kafka, error) {
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
-		// IF-2：acks=all + min.insync.replicas=2（后者是 topic 侧配置，由 B2 设置）。
+		// IF-2：acks=all。min.insync.replicas 是 topic 配置，由 ensure-kafka-topics 按
+		// profile 写入（prod=2，单节点 dev=1）。不调用 AllowAutoTopicCreation：缺 topic
+		// 必须变成 E6，而不是默默建出 1 分区的 logs.raw。
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchCompression(kgo.Lz4Compression()),
 		kgo.MaxBufferedRecords(maxBuf),
@@ -85,9 +87,11 @@ func NewKafka(cfg KafkaConfig) (*Kafka, error) {
 		// 一个没有状态码的连接错误，而非一个明确可重试的 503。
 		kgo.RecordDeliveryTimeout(timeout),
 	}
-	if cfg.ClientID != "" {
-		opts = append(opts, kgo.ClientID(cfg.ClientID))
+	clientID := cfg.ClientID
+	if clientID == "" {
+		clientID = "ingest-gateway"
 	}
+	opts = append(opts, kgo.ClientID(clientID))
 	if cfg.TLS != nil {
 		opts = append(opts, kgo.DialTLSConfig(cfg.TLS))
 	}

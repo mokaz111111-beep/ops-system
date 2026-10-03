@@ -308,6 +308,9 @@ func logStartup(log *slog.Logger, cfg config.Config, signals []telemetry.Signal)
 		"tls", cfg.TLS.Enabled,
 		"signals", names,
 		"kafka_mode", cfg.Kafka.Mode,
+		"kafka_brokers", cfg.Kafka.Brokers,
+		"topic_logs", cfg.Kafka.TopicLogs,
+		"topic_traces", cfg.Kafka.TopicTraces,
 		// 把本进程负责的分段列进启动日志：PLAN §2.4 的验收要确认五段都有归属，
 		// 从日志里能直接看到网关认领了哪三段，剩下两段该去 loader 找。
 		"latency_stages", stages,

@@ -85,13 +85,16 @@ type KafkaConfig struct {
 	// 因此 Validate 要求显式写出该值，不给默认。
 	Mode string `json:"mode"`
 
+	// Brokers 是种子列表。可用 OPS_KAFKA_BROKERS 覆盖，便于 compose 注入。
 	Brokers            []string `json:"brokers"`
 	ClientID           string   `json:"client_id"`
 	TopicLogs          string   `json:"topic_logs"`
 	TopicTraces        string   `json:"topic_traces"`
 	MaxBufferedRecords int      `json:"max_buffered_records"`
-	ProduceTimeout     Duration `json:"produce_timeout"`
-	TLSEnabled         bool     `json:"tls_enabled"`
+	// ProduceTimeout 是单次投递上限，超时按 E6。这不是 §8.1 的 0.5s 预算——
+	// 预算是常态延迟上限，超时是判定下游不可用的截止时间。
+	ProduceTimeout Duration `json:"produce_timeout"`
+	TLSEnabled     bool     `json:"tls_enabled"`
 
 	// KeyBuckets 为指定租户在分区键上追加 bucket 后缀打散热点（DD-001 §3.3）。
 	// 键为 tenant_id，值为后缀基数。
@@ -186,6 +189,9 @@ func Load(path string) (Config, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("config: 解析 %s 失败: %w", path, err)
+	}
+	if err := ApplyEnv(&cfg); err != nil {
+		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "fetched_at": "2026-10-03T00:00:00Z",
+  "default_limits": {
+    "bytes_per_sec": 10485760,
+    "bytes_burst": 4194304,
+    "events_per_sec": 1000,
+    "events_burst": 2000
+  },
+  "bindings": [
+    {
+      "token_sha256": "38ee3f704e75b11856115e1877612263b8c1e5aa793fd12e820daec03190034e",
+      "tenant_id": "org-dev",
+      "project_id": "prj-local",
+      "cluster_id": "c-local-01",
+      "tenant_status": "active",
+      "cluster_status": "active"
+    }
+  ]
+}

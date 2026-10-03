@@ -1,0 +1,20 @@
+{
+  "data_listen": ":4318",
+  "admin_listen": ":9464",
+  "signals": ["logs", "traces"],
+  "max_body_bytes": 4194304,
+  "kafka": {
+    "mode": "kafka",
+    "brokers": ["127.0.0.1:9092"],
+    "client_id": "ingest-gateway",
+    "topic_logs": "logs.raw",
+    "topic_traces": "traces.raw",
+    "produce_timeout": "3s",
+    "tls_enabled": false
+  },
+  "snapshot": {
+    "path": "deploy/ingest-gateway/snapshot.dev.json",
+    "reload_interval": "15s",
+    "fresh_on_load": true
+  }
+}

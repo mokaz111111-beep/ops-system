@@ -11,6 +11,7 @@ import (
 )
 
 func TestLoadRejectsUnknownField(t *testing.T) {
+	clearKafkaEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
 	if err := os.WriteFile(path, []byte(`{"data_listen":":1","snapshot":{"path":"x"},"typo_limit":1}`), 0o644); err != nil {
@@ -139,4 +140,79 @@ func TestParsedSignals(t *testing.T) {
 	if _, err := c.ParsedSignals(); err == nil {
 		t.Fatal("未知信号必须失败")
 	}
+}
+
+func TestApplyEnvOverridesKafka(t *testing.T) {
+	t.Setenv("OPS_KAFKA_MODE", "kafka")
+	t.Setenv("OPS_KAFKA_BROKERS", "127.0.0.1:9092, 10.0.0.2:9092")
+	t.Setenv("OPS_KAFKA_CLIENT_ID", "gw-it")
+	t.Setenv("OPS_KAFKA_PRODUCE_TIMEOUT", "1500ms")
+	t.Setenv("OPS_SNAPSHOT_PATH", "snap.json")
+
+	c := Default()
+	if err := ApplyEnv(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Kafka.Mode != "kafka" {
+		t.Fatalf("mode=%s", c.Kafka.Mode)
+	}
+	if len(c.Kafka.Brokers) != 2 || c.Kafka.Brokers[0] != "127.0.0.1:9092" {
+		t.Fatalf("brokers=%v", c.Kafka.Brokers)
+	}
+	if c.Kafka.ClientID != "gw-it" {
+		t.Fatalf("client_id=%s", c.Kafka.ClientID)
+	}
+	if time.Duration(c.Kafka.ProduceTimeout) != 1500*time.Millisecond {
+		t.Fatalf("timeout=%s", time.Duration(c.Kafka.ProduceTimeout))
+	}
+	if c.Snapshot.Path != "snap.json" {
+		t.Fatalf("snapshot=%s", c.Snapshot.Path)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExampleGatewayConfigsLoad(t *testing.T) {
+	clearKafkaEnv(t)
+	root := findRepoRoot(t)
+	for _, rel := range []string{
+		"deploy/ingest-gateway/gateway.memory.json",
+		"deploy/ingest-gateway/gateway.kafka.json",
+	} {
+		cfg, err := Load(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+		if cfg.Snapshot.Path == "" {
+			t.Fatalf("%s 缺少 snapshot.path", rel)
+		}
+	}
+}
+
+func clearKafkaEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"OPS_KAFKA_MODE", "OPS_KAFKA_BROKERS", "OPS_KAFKA_CLIENT_ID",
+		"OPS_KAFKA_TOPIC_LOGS", "OPS_KAFKA_TOPIC_TRACES", "OPS_KAFKA_TLS",
+		"OPS_KAFKA_PRODUCE_TIMEOUT", "OPS_SNAPSHOT_PATH", "OPS_DATA_LISTEN",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	t.Fatal("找不到仓库根（go.mod）")
+	return ""
 }
