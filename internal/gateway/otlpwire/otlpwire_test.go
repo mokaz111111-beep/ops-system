@@ -2,9 +2,12 @@ package otlpwire
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"testing"
+
+	"github.com/mokaz/ops-system/pkg/telemetry"
 )
 
 // --- 测试用的最小 protobuf 编码器 ---------------------------------------------
@@ -50,8 +53,8 @@ func concat(parts ...[]byte) []byte {
 	return b.Bytes()
 }
 
-// keyValue 构造 OTel 的 KeyValue{key, value:AnyValue{string_value}}。
-func keyValue(key, val string) []byte {
+// attrKV 构造 OTel 的 KeyValue{key, value:AnyValue{string_value}}。
+func attrKV(key, val string) []byte {
 	anyValue := lenField(1, []byte(val))
 	return concat(lenField(1, []byte(key)), lenField(2, anyValue))
 }
@@ -113,11 +116,11 @@ func TestCountRecords(t *testing.T) {
 			request(resourceBlock(nil, scope(3), scope(4))), 7},
 		{"多 resource",
 			request(
-				resourceBlock(resource(keyValue("service.name", "a")), scope(2)),
-				resourceBlock(resource(keyValue("service.name", "b")), scope(5), scope(1)),
+				resourceBlock(resource(attrKV("service.name", "a")), scope(2)),
+				resourceBlock(resource(attrKV("service.name", "b")), scope(5), scope(1)),
 			), 8},
 		{"resource 有属性但无 scope",
-			request(resourceBlock(resource(keyValue("service.name", "a")))), 0},
+			request(resourceBlock(resource(attrKV("service.name", "a")))), 0},
 		{"scope 存在但无记录",
 			request(resourceBlock(nil, scope(0))), 0},
 	}
@@ -160,22 +163,22 @@ func TestServiceName(t *testing.T) {
 	}{
 		{"无 resource", request(resourceBlock(nil, scope(1))), ""},
 		{"有 service.name",
-			request(resourceBlock(resource(keyValue("service.name", "checkout")), scope(1))),
+			request(resourceBlock(resource(attrKV("service.name", "checkout")), scope(1))),
 			"checkout"},
 		{"service.name 不在首位",
 			request(resourceBlock(resource(
-				keyValue("host.name", "node-1"),
-				keyValue("service.name", "payment"),
-				keyValue("k8s.pod.name", "p-1"),
+				attrKV("host.name", "node-1"),
+				attrKV("service.name", "payment"),
+				attrKV("k8s.pod.name", "p-1"),
 			), scope(1))),
 			"payment"},
 		{"只有其他属性",
-			request(resourceBlock(resource(keyValue("host.name", "node-1")), scope(1))),
+			request(resourceBlock(resource(attrKV("host.name", "node-1")), scope(1))),
 			""},
 		{"多 resource 取首个",
 			request(
-				resourceBlock(resource(keyValue("service.name", "first")), scope(1)),
-				resourceBlock(resource(keyValue("service.name", "second")), scope(1)),
+				resourceBlock(resource(attrKV("service.name", "first")), scope(1)),
+				resourceBlock(resource(attrKV("service.name", "second")), scope(1)),
 			),
 			"first"},
 	}
@@ -219,6 +222,7 @@ func TestMalformedInputNeverPanics(t *testing.T) {
 		}()
 		_, _ = CountRecords(buf)
 		_, _ = ServiceName(buf)
+		_, _ = Scan(buf, telemetry.SignalLogs)
 	}
 
 	for _, s := range seeds {
@@ -234,7 +238,7 @@ func TestMalformedInputNeverPanics(t *testing.T) {
 	}
 
 	// 对合法编码做截断：这是最接近真实故障（连接中断、batch 被切断）的一类畸形输入。
-	valid := request(resourceBlock(resource(keyValue("service.name", "svc")), scope(3)))
+	valid := request(resourceBlock(resource(attrKV("service.name", "svc")), scope(3)))
 	for i := 0; i < len(valid); i++ {
 		check(valid[:i])
 	}
@@ -249,6 +253,93 @@ func TestTruncatedValidInputReportsError(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMalformed) && !errors.Is(err, ErrOverflow) {
 		t.Errorf("期望 ErrMalformed/ErrOverflow，得到 %v", err)
+	}
+}
+
+func i64Field(field int, v uint64) []byte {
+	var b bytes.Buffer
+	b.Write(tag(field, wireI64))
+	var raw [8]byte
+	binary.LittleEndian.PutUint64(raw[:], v)
+	b.Write(raw[:])
+	return b.Bytes()
+}
+
+func scopeWithTimestamp(records int, firstUnixNano uint64, field int) []byte {
+	var parts [][]byte
+	for i := 0; i < records; i++ {
+		if i == 0 && firstUnixNano != 0 {
+			parts = append(parts, lenField(2, i64Field(field, firstUnixNano)))
+		} else {
+			parts = append(parts, lenField(2, varintField(7, uint64(i))))
+		}
+	}
+	return concat(parts...)
+}
+
+func TestScanCollectsAllFields(t *testing.T) {
+	const ts = uint64(1_700_000_000_000_000_000)
+	buf := request(resourceBlock(
+		resource(
+			attrKV("service.name", "checkout"),
+			attrKV("tenant_id", "forged"),
+			attrKV("k8s.cluster.id", "c-client"),
+		),
+		scopeWithTimestamp(3, ts, 1),
+	))
+
+	s, err := Scan(buf, telemetry.SignalLogs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.RecordCount != 3 {
+		t.Errorf("RecordCount=%d", s.RecordCount)
+	}
+	if s.ServiceName != "checkout" {
+		t.Errorf("ServiceName=%q", s.ServiceName)
+	}
+	if s.EventUnixNano != ts {
+		t.Errorf("EventUnixNano=%d，期望 %d", s.EventUnixNano, ts)
+	}
+	if !s.SelfReported.TenantID || !s.SelfReported.ClusterID {
+		t.Errorf("应检出客户端自报身份: %+v", s.SelfReported)
+	}
+	if s.SelfReported.ProjectID {
+		t.Error("未自报 project_id")
+	}
+}
+
+func TestScanTraceTimestampUsesField7(t *testing.T) {
+	const ts = uint64(1_700_000_001_000_000_000)
+	buf := request(resourceBlock(nil, scopeWithTimestamp(1, ts, 7)))
+	s, err := Scan(buf, telemetry.SignalTraces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.EventUnixNano != ts {
+		t.Errorf("traces 应取 Span.start_time_unix_nano: 得到 %d", s.EventUnixNano)
+	}
+}
+
+func TestScanDoesNotEnterMetricsTimestamps(t *testing.T) {
+	const ts = uint64(1_700_000_002_000_000_000)
+	buf := request(resourceBlock(nil, scopeWithTimestamp(2, ts, 1)))
+	s, err := Scan(buf, telemetry.SignalMetrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.EventUnixNano != 0 {
+		t.Error("metrics 时间戳埋得太深，不该为代理指标走进 data_points")
+	}
+	if s.RecordCount != 2 {
+		t.Errorf("RecordCount=%d", s.RecordCount)
+	}
+}
+
+func TestScanMalformed(t *testing.T) {
+	_, err := Scan([]byte{0x0a, 0x05, 'a'}, telemetry.SignalLogs)
+	if err == nil {
+		t.Fatal("畸形输入必须报错")
 	}
 }
 
@@ -282,7 +373,7 @@ func BenchmarkCountRecords(b *testing.B) {
 	var blocks [][]byte
 	for i := 0; i < 10; i++ {
 		blocks = append(blocks, resourceBlock(
-			resource(keyValue("service.name", "checkout"), keyValue("host.name", "node-1")),
+			resource(attrKV("service.name", "checkout"), attrKV("host.name", "node-1")),
 			scope(50), scope(50),
 		))
 	}
