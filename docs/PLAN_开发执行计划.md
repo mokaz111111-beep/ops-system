@@ -47,7 +47,7 @@
 | B1 | **摄入网关 MVP**：TLS 终止、Token 鉴权、`tenant_id`/`project_id`/`cluster_id` 强制注入、租户级限流桶（bytes/s + EPS 双维度）、协议归一 | 无 | 可接 OTLP 并投 Kafka |
 | B2 | Kafka 集群与 topic：`logs.raw`（12 分区）、`traces.raw`（6 分区），3 副本 + `min.insync.replicas=2`，**保留期 12 小时** | 无 | 就绪 |
 | **B3** | **IF-3 双签：Stream Load label 的批次边界对齐规则**（Q2-10 / DD-001 OQ-3）。候选是按固定 offset 步长对齐 | 无 | **已定稿并双签（2026-10-04 Owner）**：切批为 Kafka 日志纯函数；`S=4096`；64MiB `encoded_bytes` 帽；2s 不得单独决定 `endOffset`；`label already exists` 视成功；label 范围 ⊆ 写入行。正文见 DD-001 §2.1 / §3.4。OQ-5 同步关闭。OQ-6 保留「二期必改回 `trace_id`」，M1 分区键 `tenant_id\|cluster_id` 已签 |
-| B4 | **`otlp-loader`**：Kafka consumer → OTLP protobuf 解析 → 展开扁平化 → 批量 Stream Load；label 幂等；loader 侧类型强制转换（对接 A3 结论） | B3、A2 | 入库正确，重复消费不产生重复行。**B3 已解阻。A3 尚未结论：类型强制按 DD-002 当前主方案做可插拔接口 + 默认实现，不得假装 A3 已拍板** |
+| B4 | **`otlp-loader`**：Kafka consumer → OTLP protobuf 解析 → 展开扁平化 → 批量 Stream Load；label 幂等；loader 侧类型强制转换（对接 A3 结论） | B3、A2 | **代码已落地**（`cmd/otlp-loader`）。无 Doris 时 Fake Stream Load + 确定性切批测试全绿。真集群「入库正确、重复消费不产生重复行」仍待 A2。A3 未结论：强制转换是可插拔接口 + DD-002 当前默认 |
 | B5 | IF-1 错误码表 E1~E9 落地，并与各语言 OTLP exporter 的 partial-success 重试行为核对 | B1 | 码表定稿进 DD-001 |
 | **B6** | **延迟分段打点**：按 §8.1 的五段（Collector / 网关 / Kafka / loader / Stream Load）逐段埋点 | B1、B4 | **五段各自有数，不接受只给总和**（理由见 §2.4） |
 | B7 | 摄入压测：常态 3.5 万 EPS、峰值 10.5 万 EPS | B4 | 达标且 p99 < 10s |
