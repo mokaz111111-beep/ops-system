@@ -1,0 +1,5 @@
+dist
+coverage
+src/api/gen
+public/mockServiceWorker.js
+package-lock.json
