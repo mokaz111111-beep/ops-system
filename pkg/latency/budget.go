@@ -108,7 +108,7 @@ func Stages() []StageSpec {
 
 // StagesFor 返回由指定进程产出观测值的段。
 //
-// 摄入网关只产出前三段。后两段由 otlp-loader 产出（PLAN B4，尚未实现），本函数的存在
+// 摄入网关只产出前三段。后两段由 otlp-loader 产出（PLAN B4 / B6），本函数的存在
 // 就是让"网关这边只有三段"是一个显式的、可查询的事实，而不是实现遗漏。
 func StagesFor(c Component) []StageSpec {
 	var out []StageSpec
