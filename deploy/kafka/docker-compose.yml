@@ -1,0 +1,42 @@
+# 本地单节点 Kafka（KRaft，无 ZooKeeper）。
+#
+# 这不是 PLAN B2 的生产集群。生产是 3 节点、RF=3、min.insync.replicas=2。
+# 单 broker 的 ISR 只有 1，把 RF 写成 3 只会让 topic 建失败或永远不可写。
+# 分区数（logs 12 / traces 6）和保留期 12h 与 IF-2 相同，由 ensure-kafka-topics -profile dev 写入。
+#
+# 自动建 topic 关闭：漏跑 ensure 时写入必须失败，不能冒出默认 1 分区的脏 topic。
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    hostname: kafka
+    container_name: ops-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://kafka:19092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://127.0.0.1:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 25s
+
+volumes:
+  kafka-data:
