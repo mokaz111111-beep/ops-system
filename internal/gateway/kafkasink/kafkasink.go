@@ -19,23 +19,20 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/mokaz/ops-system/internal/kafka/topics"
 	"github.com/mokaz/ops-system/pkg/identity"
 	"github.com/mokaz/ops-system/pkg/ingestmsg"
 	"github.com/mokaz/ops-system/pkg/telemetry"
 )
 
-// IF-2 的 topic 名与分区数。
-//
-// 分区数在此声明不是因为网关会建 topic（建 topic 是 PLAN B2 的运维动作），而是因为它是
-// 契约的一部分：分区只增不减，且 otlp-loader 的副本上限等于分区数。写在代码里便于在
-// 启动自检中与集群实际分区数比对，发现不一致时宁可启动即告警，也不要等到出现热点才发现
-// topic 是被谁用默认值建出来的。
+// IF-2 的 topic 名与分区数。权威定义在 internal/kafka/topics，由 ensure-kafka-topics 建出来。
+// 网关只引用，避免生产者与建 topic 命令各写一份数字之后漂成两个集群。
 const (
-	TopicLogsRaw   = "logs.raw"
-	TopicTracesRaw = "traces.raw"
+	TopicLogsRaw   = topics.LogsRaw
+	TopicTracesRaw = topics.TracesRaw
 
-	PartitionsLogsRaw   = 12
-	PartitionsTracesRaw = 6
+	PartitionsLogsRaw   = topics.LogsPartitions
+	PartitionsTracesRaw = topics.TracesPartitions
 )
 
 // ErrNoTopic 表示该信号没有配置 topic。
