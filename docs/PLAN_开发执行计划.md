@@ -46,8 +46,8 @@
 |---|--------|------|---------|
 | B1 | **摄入网关 MVP**：TLS 终止、Token 鉴权、`tenant_id`/`project_id`/`cluster_id` 强制注入、租户级限流桶（bytes/s + EPS 双维度）、协议归一 | 无 | 可接 OTLP 并投 Kafka |
 | B2 | Kafka 集群与 topic：`logs.raw`（12 分区）、`traces.raw`（6 分区），3 副本 + `min.insync.replicas=2`，**保留期 12 小时** | 无 | 就绪 |
-| **B3** | **IF-3 双签：Stream Load label 的批次边界对齐规则**（Q2-10 / DD-001 OQ-3）。候选是按固定 offset 步长对齐 | 无 | **必须在 B4 编码前定稿**（理由见 §2.1） |
-| B4 | **`otlp-loader`**：Kafka consumer → OTLP protobuf 解析 → 展开扁平化 → 批量 Stream Load；label 幂等；loader 侧类型强制转换（对接 A3 结论） | B3、A2 | 入库正确，重复消费不产生重复行 |
+| **B3** | **IF-3 双签：Stream Load label 的批次边界对齐规则**（Q2-10 / DD-001 OQ-3）。候选是按固定 offset 步长对齐 | 无 | **已定稿并双签（2026-10-04 Owner）**：切批为 Kafka 日志纯函数；`S=4096`；64MiB `encoded_bytes` 帽；2s 不得单独决定 `endOffset`；`label already exists` 视成功；label 范围 ⊆ 写入行。正文见 DD-001 §2.1 / §3.4。OQ-5 同步关闭。OQ-6 保留「二期必改回 `trace_id`」，M1 分区键 `tenant_id\|cluster_id` 已签 |
+| B4 | **`otlp-loader`**：Kafka consumer → OTLP protobuf 解析 → 展开扁平化 → 批量 Stream Load；label 幂等；loader 侧类型强制转换（对接 A3 结论） | B3、A2 | 入库正确，重复消费不产生重复行。**B3 已解阻。A3 尚未结论：类型强制按 DD-002 当前主方案做可插拔接口 + 默认实现，不得假装 A3 已拍板** |
 | B5 | IF-1 错误码表 E1~E9 落地，并与各语言 OTLP exporter 的 partial-success 重试行为核对 | B1 | 码表定稿进 DD-001 |
 | **B6** | **延迟分段打点**：按 §8.1 的五段（Collector / 网关 / Kafka / loader / Stream Load）逐段埋点 | B1、B4 | **五段各自有数，不接受只给总和**（理由见 §2.4） |
 | B7 | 摄入压测：常态 3.5 万 EPS、峰值 10.5 万 EPS | B4 | 达标且 p99 < 10s |
@@ -93,6 +93,8 @@
 ### 2.1 B3 必须在 B4 之前
 
 幂等 label 的批次边界规则（B3）决定了 `otlp-loader` 如何切批。先写 loader 再补规则，意味着攒批逻辑、offset 管理、label 生成三处都要改。而这个 bug 的特征是**不报错、只丢数**——`-235` 之类的错误会在监控里尖叫，重复消费导致的 label 不一致则完全静默，直到有人发现某天的数据少了一截。
+
+**B3 已于 2026-10-04 由 Owner 双签关闭**（DD-001 §2.1 第 1–5 条 + DD-002 Q2-10）。B4 编码必须按已签口径落地，不得另选切批函数。同日一并关闭：生产 `acks=all` + `min.insync.replicas=2`（OQ-5）、身份只认消息头、限流按 Cluster、单批超突发额度走 E4（默认 4MiB）。OQ-6 的 M1 分区键偏离已签，二期必改回 `trace_id`。
 
 ### 2.2 D1 必须在第 1~2 周完成
 
@@ -213,4 +215,4 @@ A5 的增量成本很小（同一套仿真数据换一个建表配置重跑一�
 4. **C1** VM exemplar 支持实况验证（全部 Open Question 中最快出结论的）
 5. **A1 / E1** 存算分离集群搭建与 FoundationDB 就绪度评估（同步进行）
 6. **E4** 法务五项条款启动（无技术依赖，且全是 GA 阻塞项）
-7. **B3** IF-3 label 批次边界规则定稿（纯设计决策，但必须早于 B4 编码）
+7. **B3** IF-3 label 批次边界规则定稿（纯设计决策，必须早于 B4 编码）— **2026-10-04 已双签**
