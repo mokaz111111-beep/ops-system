@@ -12,6 +12,8 @@
 
 > **一句话定位**：**Metrics 产品**的存储引擎。承载全部指标数据，保持 PromQL 与 Grafana 生态零成本接入，并在多租户下控制高基数风险。不开通本产品的租户，数据不得进入 vmstorage。
 
+> **部署**：写入整形与基数防护跑在 **`ops-ingest`**（SD-000 §1.3），不是独立 `metrics-ingest` Deployment。查询走 `ops-query` → vmauth → vmselect。`vmalert` 属 VM 组件。
+
 ---
 
 ## 0. 范围与非范围
