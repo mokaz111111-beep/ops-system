@@ -545,7 +545,7 @@ Schema Template 的路径清单不是一次定死的。随着租户接入，会�
 | **Q2-8** | 排序键前置 `tenant_id` 相对官方基线 `DUPLICATE KEY(ts)` 的性能代价 | M1 | 若代价显著，需重新权衡租户裁剪与"查询最新 N 条"加速 |
 | ~~**Q2-9**~~ | ~~Doris vs ClickHouse 最终裁决~~ | — | **已关闭（2026-10）：Doris 定稿，不做对比 PoC**（SD-000 Q-1）。本文档的引擎前提由此固定，但同时意味着 **Q2-2 的退路是唯一退路**，见下 |
 | **Q2-11**<br>（由 IF-007 提出，**M1 必须处理**） | **两项表结构变更需会签**：① `row_ref` 单行稳定定位键——IF-007 §5.1 要求它"至少 24 小时有效且跨 compaction 有效"，这筛掉了查询层合成方案，只剩写入时生成行内唯一标识；② `severity` 改为独立物化列——直方图按 severity 堆叠是高频操作，若它落在半结构化列且未被子列化，每次渲染都要付长尾聚合的代价 | **M1** | 两者都是 IF-6 破坏性变更，**越晚做代价越高**；①不做则 FE-07 单条展开与 FE-08 上下文无法交付（M2 阻塞） |
-| **Q2-10**<br>（由 DD-001 提出，IF-3 双签范围） | **Stream Load label 的批次边界在 consumer rebalance 后未定义**。label 取 `{topic}-{partition}-{startOffset}-{endOffset}`，其幂等性依赖"同一段 offset 区间总被切成同一个批次"；rebalance 或副本数变化后，新 owner 可能从同一 `startOffset` 切出不同的 `endOffset`，label 随之不同、**去重失效**。候选修法是按固定 offset 步长对齐批次边界 | M1 | **直接影响 SLO-6（丢失率 < 0.01%）**。须与 DD-001 owner 共同确认后写入 IF-3 |
+| ~~**Q2-10**~~<br>（由 DD-001 提出，IF-3 双签范围） | ~~Stream Load label 的批次边界在 consumer rebalance 后未定义~~ | — | **已关闭（B3，规则正文在 DD-001 §3.4）**：`end(start, log)` 为纯函数；全局格子 `S=4096`；64MB 为确定性体积帽；2s 不得单独决定 `endOffset`；label 的 `[start, end)` 必须等于实际写入范围；`label already exists` 视为成功并 commit 到该 `end`。本侧会签点：改 `S` / `B` 或改 label 格式须回到本文档签字 |
 
 ---
 
@@ -553,6 +553,7 @@ Schema Template 的路径清单不是一次定死的。随着租户接入，会�
 
 - [ ] M1 实测后回填 §3.3（3）的真实存储开销比例，并同步 X-003
 - [ ] M1 实测后确认 §3.3（1）的官方硬约束清单在 4.0.8 上逐项成立
-- [ ] 与 DD-001 owner 共同确认 IF-3 条款并双签（重点：批次大小与 `variant_doc_materialization_min_rows` 的耦合）
+- [x] Q2-10 label 批次边界对齐：接受 DD-001 §3.4 的 B3 定稿（改 S/B/label 格式须回签）
+- [ ] 与 DD-001 owner 会签 IF-3 其余条款（重点：批次大小与 `variant_doc_materialization_min_rows` 的耦合）
 - [ ] 向 DD-005 owner 交付 IF-6 的正式列清单与可用索引清单（含哪些过滤条件走索引、哪些走扫描）
 - [ ] §3.6 Schema 演进策略需经架构评审确认后生效
