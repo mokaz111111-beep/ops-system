@@ -1,0 +1,25 @@
+{
+  "admin_listen": ":9465",
+  "kafka": {
+    "mode": "kafka",
+    "brokers": ["127.0.0.1:9092"],
+    "group_id": "otlp-loader",
+    "client_id": "otlp-loader",
+    "topics": ["logs.raw", "traces.raw"],
+    "tls_enabled": false
+  },
+  "doris": {
+    "mode": "http",
+    "fe": "http://127.0.0.1:8030",
+    "database": "ops",
+    "user": "root",
+    "table_logs": "logs",
+    "table_spans": "spans"
+  },
+  "batch": {
+    "stride": 4096,
+    "max_encoded_bytes": 67108864,
+    "idle_submit": "2s"
+  },
+  "shutdown_grace": "15s"
+}

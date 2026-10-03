@@ -1,0 +1,21 @@
+{
+  "admin_listen": ":9465",
+  "kafka": {
+    "mode": "memory",
+    "group_id": "otlp-loader",
+    "client_id": "otlp-loader",
+    "topics": ["logs.raw", "traces.raw"]
+  },
+  "doris": {
+    "mode": "fake",
+    "database": "ops",
+    "table_logs": "logs",
+    "table_spans": "spans"
+  },
+  "batch": {
+    "stride": 4096,
+    "max_encoded_bytes": 67108864,
+    "idle_submit": "2s"
+  },
+  "shutdown_grace": "15s"
+}

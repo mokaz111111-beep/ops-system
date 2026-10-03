@@ -3,6 +3,7 @@ package kafkasrc
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // CommitRec 是 Fake 记下的一次 offset 提交。
@@ -51,15 +52,30 @@ func (f *Fake) Poll(ctx context.Context) (Batch, error) {
 		return Batch{}, err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.closed {
+		f.mu.Unlock()
 		return Batch{}, context.Canceled
+	}
+	if len(f.queue) == 0 {
+		f.mu.Unlock()
+		// memory 模式不能空转吃满 CPU；真 Kafka 的 PollFetches 本身会阻塞。
+		select {
+		case <-ctx.Done():
+			return Batch{}, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+		f.mu.Lock()
+		if f.closed {
+			f.mu.Unlock()
+			return Batch{}, context.Canceled
+		}
 	}
 	out := Batch{Messages: f.queue}
 	f.queue = nil
 	for k, h := range f.hwm {
 		out.Watermarks = append(out.Watermarks, Watermark{Topic: k.Topic, Partition: k.Partition, HWM: h})
 	}
+	f.mu.Unlock()
 	return out, nil
 }
 
