@@ -12,6 +12,8 @@
 
 > **一句话定位**：把 AI 作为与 UI、Open API 并列的**第三类产品接口**，而不是挂在界面上的聊天框。
 
+> **部署（SD-000 §1.3）**：AI 网关与 Brain 住在 **`ops-control`**（M4）。查数只调 `ops-query` 的 IF-8，**禁止**再起 `ops-ai` / `ops-mcp`。对外 MCP Server 的数据面就是 `ops-query` 工具层。
+
 ---
 
 ## 0. 范围与非范围

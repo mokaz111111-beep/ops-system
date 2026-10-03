@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |----|----|
-| 版本 | v1.1（补产品/引擎边界：计量不进 Doris） |
+| 版本 | v1.2（四个 Go 进程：ingest / loader / query / control） |
 | 状态 | 执行中 |
 | 上游 | [SD-000 §11 里程碑](SD-000_总体系统设计.md)（本文档是它的执行层展开） |
 | 资源 | 后端 6~8 · 前端 2 · SRE 2（已确认） |
@@ -21,6 +21,8 @@
 **③ 现在最该抢的不是进度，是"不可逆的错误"。** M1 里有三项一旦做错就无法事后修补：VARIANT 跨租户类型冲突的建模决策（污染后只能重建分区）、静态加密的密钥粒度（改一次要重写全部历史数据）、Stream Load 幂等 label 的批次边界（定错了丢数且不报错）。这三项的优先级高于任何功能进度。
 
 **④ 产品与引擎从第一天按边界写代码。** Logs 与 Traces 复用 Doris，但表族、API、配额、开通必须按产品切开；计量账本进控制面库，不得图省事建在 Doris。结构现在不做，后面要把「只买指标」从日志集群里挖出来。见 SD-000 §1.2。
+
+**⑤ 自研 Go 只发布四个进程**（SD-000 §1.3）：`ops-ingest` / `ops-loader` / `ops-query` / `ops-control`。M1 的 `cmd/otlp-loader` 对应 `ops-loader`；入口与 metrics 路径进 `ops-ingest`，不要新建 `cmd/metrics-ingest` 当独立服务。查询骨架进 `ops-query`。控制面/计量/归档以后都进 `ops-control`。
 
 ---
 
@@ -60,7 +62,7 @@
 |---|--------|------|---------|
 | **C1** | **Q-5：VictoriaMetrics 的 exemplar 支持实况**（M1 第一周，这是全部 Open Question 里最快能出结论的一个） | 无 | 是／否。为否则沿用 DD-003 已设计的自建 exemplar 表方案 |
 | C2 | VM 集群部署：vmauth / vminsert / vmstorage（分片 + 副本因子 2）/ vmselect / vmalert | 无 | 可写可查，accountID 隔离生效 |
-| C3 | `metrics-ingest` MVP：remote-write 接收、`tenant_id` 注入、per-tenant HLL 基数计数器 | C2 | 链路打通 |
+| C3 | **`ops-ingest` 的 metrics 路径** MVP：remote-write、`tenant_id` 注入、per-tenant HLL（与 OTLP 入口同进程，禁止独立 Deployment） | C2 | 链路打通 |
 | C4 | **HLL 基数计数器在多副本下的全局合并方式定稿**（DD-003 阻塞 IF-4 的那一项）：各副本 sketch 如何合并、统计窗口多长、如何重置 | C3 | 写入 IF-4 |
 
 ### Track D · 查询契约与前端启动 — 1 后端 + 2 前端
@@ -71,7 +73,7 @@
 |---|--------|------|---------|
 | **D1** | **IF-7 查询 API 规格定稿**（DD-005 §3.7 已有草案，需补全参数与返回） | 无 | **第 1~2 周必须完成**（理由见 §2.2）。须覆盖 DD-008 §3.9 的 FE-01~FE-31 |
 | D2 | Q5-7 **单行稳定定位键**决策：写入时生成行标识 vs 查询层合成不透明游标。与 DD-002 共同定 | D1 起同步 | 阻塞 FE-07 单条展开 / FE-08 上下文 |
-| D3 | 查询网关骨架：认证、租户注入（`datafusion-sql` AST 改写）、扫描上限、查询审计 | D1 | 单表检索可用 |
+| D3 | **`ops-query` 骨架**：认证、租户注入（`datafusion-sql` AST 改写）、扫描上限、查询审计 | D1 | 单表检索可用 |
 | **D4** | **AST 改写的租户注入完备性测试集**（Q5-5）：嵌套子查询、CTE、UNION 等形态 | D3 | **这是隔离漏洞的主要来源，必须有用例集而非人工 review** |
 | D5 | Mock IF-7 服务 | D1 | 前端可对 mock 开发 |
 | D6 | 前端：工程脚手架 + 检索页（查询框、直方图、结果列表、Facet 侧栏） | D5 | 对 mock 跑通 |
@@ -135,9 +137,9 @@ A5 的增量成本很小（同一套仿真数据换一个建表配置重跑一�
 |------|--------|------|
 | PII 脱敏实现 | M2 | 规则与性能预算在 X-002 已定义，实现不阻塞 M1 任何验证 |
 | 归档链路、Iceberg、冷查询 | M3 | 依赖分区留存到期，M1 没有满 15 天的数据 |
-| 告警引擎 | M3 | — |
+| 告警引擎 | M3 | 派发在 `ops-control`，执行在 `ops-query`；`vmalert` 仍是 VM 组件。禁止第三个自研告警进程 |
 | 控制面完整实现 | M4 | **M1 配置硬编码即可，但不得写出"请求路径同步查控制面"的代码**——fail-static 要求配置只从本地快照读，这个结构现在不建，后面改造成本极高 |
-| 计量计费管线 | M4 | 账本在**控制面库**（按 `tenant_id + product + day`），Doris/VM 只作对账源。M1 不得把用量表建进 Doris |
+| 计量计费管线 | M4 | 聚合循环在 **`ops-control`**；账本在控制面 PG（`tenant_id + product + day`）。M1 不得把用量表建进 Doris，也不得新建 `ops-metering` |
 | AI 层任何代码 | M4 | IF-8 规格都还没有 |
 | 前端的看板、服务拓扑、Live Tail、Trace 瀑布图 | M2~M3 | M1 前端只做检索页 |
 | 大租户双轨 | M3（Track B）/ M4（Track A） | — |
